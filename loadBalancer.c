@@ -105,7 +105,6 @@ int main(int argc, char **argv) {
 
         if (fork() == 0) {
             close(listenfd);
-            while ((nread = read(connfd, buff, sizeof(buff))) > 0) {
                 if ((backend_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
                     perror("Errore creazione socket verso backend");
                     close(connfd);
@@ -163,14 +162,13 @@ int main(int argc, char **argv) {
                         }
                         ptr = buff;
                         da_scrivere = n;
-                        WRITE_ALL(backend_fd, ptr, da_scrivere, esito);
+                        WRITE_ALL(connfd, ptr, da_scrivere, esito);
                         if (esito < 0 && da_scrivere>0) {
                             perror("Errore scrittura verso client");
                             break;
                         }
                     }
                 }
-            }
 
             if (nread < 0) {
                 perror("Read");
