@@ -1,8 +1,6 @@
-#include <dirent.h>
 #include <errno.h>
-#include <fcntl.h>
-#include <netdb.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,34 +10,39 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define DIM_BUFF 256
-#define LENGTH_CMD 256
-#define RECV_STRING_STREAM(sd, buf) read(sd, buf, LENGTH_CMD)
-#define max(a, b)  ((a) > (b) ? (a) : (b))
-typedef struct {
-    char comando[LENGTH_CMD];
-    char argomenti[LENGTH_CMD];
-} Pack;
-
-
-void gestore(int signo){
+#define DIM_BUFF 4096
+#define WRITE_ALL(fd, buf, count, n) \
+    while (count > 0) { \
+        n = write(fd, buf, count); \
+        if (n <= 0) { \
+            if (n < 0 && errno == EINTR){ \
+                continue; \
+            } \
+            break; \
+        } \
+        buf += n; \
+        count -= n; \
+    }
+void gestore(int signo) {
     int stato;
-    wait(&stato);//waitpid(-1, &stato, WNOHANG);
+    while (waitpid(-1, &stato, WNOHANG) > 0);
 }
 
 int main(int argc, char **argv) {
-    int listenfd, connfd, udpfd, nready, maxfdp1, status, pid;
+    int listenfd, connfd, nread, port, backend_fd, maxfd, n;
     const int on = 1;
-    char buff[DIM_BUFF], comando[LENGTH_CMD], argomenti[LENGTH_CMD];
     fd_set rset;
-    int len, nread, port, res;
-    struct sockaddr_in cliaddr, servaddr;
-    Pack pack;
-
+    char buff[DIM_BUFF];
+    socklen_t len;
+    char *ptr = buff;
+    size_t da_scrivere;
+    ssize_t esito;
+    struct sockaddr_in cliaddr, servaddr, backend_addr;
     if (argc != 2) {
         printf("Error: %s port\n", argv[0]);
         exit(1);
     }
+
     nread = 0;
     while (argv[1][nread] != '\0') {
         if ((argv[1][nread] < '0') || (argv[1][nread] > '9')) {
@@ -48,6 +51,7 @@ int main(int argc, char **argv) {
         }
         nread++;
     }
+
     port = atoi(argv[1]);
     if (port < 1024 || port > 65535) {
         printf("Porta scorretta...\n");
@@ -59,108 +63,126 @@ int main(int argc, char **argv) {
     servaddr.sin_addr.s_addr = INADDR_ANY;
     servaddr.sin_port        = htons(port);
 
-    printf("inizializzo le socket\n");
+    printf("Inizializzo la socket TCP\n");
     listenfd = socket(AF_INET, SOCK_STREAM, 0);
     if (listenfd < 0) {
-        perror("apertura socket TCP ");
+        perror("Apertura socket TCP");
         exit(EXIT_FAILURE);
     }
+
     if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) < 0) {
         perror("TCP setsockopt");
         exit(EXIT_FAILURE);
     }
+
     if (bind(listenfd, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
-        perror("bind TCP");
-        exit(EXIT_FAILURE);
-    }
-    if (listen(listenfd, 5) < 0) {
-        perror("listen");
+        perror("Bind TCP");
         exit(EXIT_FAILURE);
     }
 
-    udpfd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (udpfd < 0) {
-        perror("apertura socket UDP");
-        exit(EXIT_FAILURE);
-    }
-    if (setsockopt(udpfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) < 0) {
-        perror("UDP setsockopt");
-        exit(EXIT_FAILURE);
-    }
-    if (bind(udpfd, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
-        perror("bind UDP");
+    if (listen(listenfd, SOMAXCONN) < 0) { //la coda viene affidata al SO con SOMAXCONN
+        perror("Listen");
         exit(EXIT_FAILURE);
     }
 
     signal(SIGCHLD, gestore);
-    FD_ZERO(&rset);
-    maxfdp1 = max(listenfd, udpfd) + 1;
-    printf("inizio del demone\n");
+
+    printf("Inizio del demone\n");
+
     for (;;) {
-        FD_SET(listenfd, &rset);
-        FD_SET(udpfd, &rset);
-        if ((nready = select(maxfdp1, &rset, NULL, NULL, NULL)) < 0) {
-            if (errno == EINTR) continue;
-            else {
-                perror("select");
+        len = sizeof(cliaddr);
+        if ((connfd = accept(listenfd, (struct sockaddr *)&cliaddr, &len)) < 0) {
+             //accept rende bloccante, dunque il processo con la terminazione dei figli manda un SIGCHLD e faccio continue
+            if (errno == EINTR) {
+                continue;
+            } else {
+                perror("Accept");
                 exit(EXIT_FAILURE);
             }
         }
-        //-----------------------------------------------------------------------------------------
 
-        // STREAM: esecuzione remota comando (output inviato al client)
-        if (FD_ISSET(listenfd, &rset)) {
+        printf("Accettata la connessione stream, inizio con le operazioni\n");
 
-            len = sizeof(cliaddr);
-            if ((connfd = accept(listenfd, (struct sockaddr *)&cliaddr, &len)) < 0) {
-                if (errno == EINTR) continue;
-                else { perror("accept"); exit(9); }
-            }
-            printf("accettato la connessione stream, inizio con le operazioni\n");
-            if (fork() == 0) {
-                close(listenfd);
-                while ((nread = RECV_STRING_STREAM(connfd, comando)) > 0) {
-                    //MODIFICARE QuA
-
-
-
-                }
-                if(nread<0){
-                    perror("receivefrom");
-                }
-                    printf("fine operazione stream\n");
+        if (fork() == 0) {
+            close(listenfd);
+            while ((nread = read(connfd, buff, sizeof(buff))) > 0) {
+                if ((backend_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+                    perror("Errore creazione socket verso backend");
                     close(connfd);
-                    exit(EXIT_SUCCESS);
-            }
-            shutdown(connfd, 0);
-            shutdown(connfd,1);
-            close(connfd);
-        }
-        //-----------------------------------------------------------------------------------------
-        // DATAGRAM: esecuzione comando e invio solo valore di ritorno
-        if (FD_ISSET(udpfd, &rset)) {
-            printf("accettato la connessione udp, inizio con le operazioni\n");
-
-            len = sizeof(cliaddr);
-            nread = recvfrom(udpfd, &pack, sizeof(Pack), 0, (struct sockaddr *)&cliaddr, &len);
-            if ((nread)>0) { // comando
-                strcpy(comando, pack.comando);
-                printf("ricevuto comando %s\n", comando);
-                strcpy(argomenti, pack.argomenti);
-                printf("ricevuto argomento %s \n", argomenti);
-                //MODIFICARE QUA
-
-
-
-                if (sendto(udpfd, &res, sizeof(int), 0, (struct sockaddr *)&cliaddr, len) < 0) {
-                    perror("sendto udp");
+                    exit(EXIT_FAILURE);
                 }
-            }else{
-                perror("receivefrom");
-            }
-            printf("fine operazione udp\n");
 
+                memset(&backend_addr, 0, sizeof(backend_addr));
+                backend_addr.sin_family = AF_INET;
+                backend_addr.sin_port = htons(8001);
+                if (inet_pton(AF_INET, "127.0.0.1", &backend_addr.sin_addr) <= 0) {
+                    perror("Errore trasformazione ip in binario");
+                   close(backend_fd);
+                    close(connfd);
+                    exit(EXIT_FAILURE);
+                }
+                if (connect(backend_fd, (struct sockaddr *)&backend_addr, sizeof(backend_addr)) < 0) {
+                    perror("Errore connect al backend");
+                    close(backend_fd);
+                    close(connfd);
+                    exit(EXIT_FAILURE);
+                }
+                printf("Connessione al backend avvennuta");
+
+                maxfd = (connfd > backend_fd) ? connfd : backend_fd;
+
+                for (;;) {
+                    FD_ZERO(&rset);
+                    FD_SET(connfd, &rset);
+                    FD_SET(backend_fd, &rset);
+
+                    if (select(maxfd + 1, &rset, NULL, NULL, NULL) < 0) {
+                        if (errno == EINTR) continue;
+                            perror("Errore select");
+                            break;
+                        }
+
+                    if (FD_ISSET(connfd, &rset)) {
+                        n = read(connfd, buff, sizeof(buff));
+                        if (n <= 0) {
+                            break;
+                        }
+                        ptr = buff;
+                        da_scrivere = n;
+                        WRITE_ALL(backend_fd, ptr, da_scrivere, esito);
+                        if (esito < 0 && da_scrivere>0) {
+                            perror("Errore scrittura verso backend");
+                            break;
+                        }
+                    }
+
+                    if (FD_ISSET(backend_fd, &rset)) {
+                        n = read(backend_fd, buff, sizeof(buff));
+                        if (n <= 0) {
+                            break;
+                        }
+                        ptr = buff;
+                        da_scrivere = n;
+                        WRITE_ALL(backend_fd, ptr, da_scrivere, esito);
+                        if (esito < 0 && da_scrivere>0) {
+                            perror("Errore scrittura verso client");
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (nread < 0) {
+                perror("Read");
+            }
+
+            printf("Fine operazione stream\n");
+            close(connfd);
+            exit(EXIT_SUCCESS);
         }
 
+        close(connfd);
     }
+
+    return 0;
 }
