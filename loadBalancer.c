@@ -29,7 +29,7 @@ void gestore(int signo) {
 }
 
 int main(int argc, char **argv) {
-    int listenfd, connfd, nread, port, backend_fd, maxfd, n;
+    int listenfd, connfd, nread, port, backend_fd, maxfd, n, roundRobin;
     const int on = 1;
     fd_set rset;
     char buff[DIM_BUFF];
@@ -88,6 +88,7 @@ int main(int argc, char **argv) {
     signal(SIGCHLD, gestore);
 
     printf("Inizio del demone\n");
+    roundRobin = 0;
 
     for (;;) {
         len = sizeof(cliaddr);
@@ -126,7 +127,7 @@ int main(int argc, char **argv) {
                     close(connfd);
                     exit(EXIT_FAILURE);
                 }
-                printf("Connessione al backend avvennuta");
+                printf("Connessione al backend avvennuta\n");
 
                 maxfd = (connfd > backend_fd) ? connfd : backend_fd;
 
@@ -170,11 +171,8 @@ int main(int argc, char **argv) {
                     }
                 }
 
-            if (nread < 0) {
-                perror("Read");
-            }
-
             printf("Fine operazione stream\n");
+            close(backend_fd);
             close(connfd);
             exit(EXIT_SUCCESS);
         }
