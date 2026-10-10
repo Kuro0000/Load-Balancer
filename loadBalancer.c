@@ -30,7 +30,7 @@ void gestore(int signo) {
 }
 
 int main(int argc, char **argv) {
-    int listenfd, connfd, nread, port, backend_fd, maxfd, n, roundRobin, serverList_fd;
+    int listenfd, connfd, nread, port, backend_fd, maxfd, n, roundRobin, serverList_fd, portaServer;
     const int on = 1;
     fd_set rset;
     char buff[DIM_BUFF], backendServer[DIM_BUFF], c, ip_tmp[32], port_tmp[16];
@@ -55,15 +55,90 @@ int main(int argc, char **argv) {
         nread++;
     }
 
+    strncpy(backendServer,argv[2], DIM_BUFF-1);
+    backendServer[DIM_BUFF-1] = '\0';
+    printf("Preso in input il file %s", backendServer);
+
+    serverList_fd = open(backendServer, O_RDONLY);
+
+         if (serverList_fd < 0) {
+             perror("Errore apertura file server");
+             exit(EXIT_FAILURE);
+         }
+         while (read(serverList_fd, &c, 1) > 0) {
+             if (c == ' ' || c == '\t') {
+                 ip_tmp[idx_ip] = '\0';
+                 leggendo_porta = 1;
+             }
+             else if (c == '\n') {
+                 if (idx_ip > 0) {
+                     port_tmp[idx_port] = '\0';
+
+                     memset(&backend_addr[num_servers], 0, sizeof(struct sockaddr_in));
+                     backend_addr[num_servers].sin_family = AF_INET;
+                     portaServer = atoi(port_tmp);
+                     if(portaServer<1 ||portaServer>65535){
+
+                         printf("porta non permessa");
+                         exit(EXIT_FAILURE);
+                     }
+                     backend_addr[num_servers].sin_port = htons(portaServer);
+
+                     if(inet_pton(AF_INET, ip_tmp, &backend_addr[num_servers].sin_addr)!=1){
+                         printf("file malformato");
+                         exit(EXIT_FAILURE);
+                     }
+
+                     printf("Caricato backend %d: %s:%s\n", num_servers, ip_tmp, port_tmp);
+
+                     num_servers++;
+                     if (num_servers >= MAX_SERVER)
+                         break;
+                 }
+                 idx_ip = 0;
+                 idx_port = 0;
+                 leggendo_porta = 0;
+             }
+             else if (c != '\r') {
+                 if (leggendo_porta == 0 && idx_ip < sizeof(ip_tmp) - 1) {
+                     ip_tmp[idx_ip++] = c;
+                 } else if (leggendo_porta == 1 && idx_port < sizeof(port_tmp) - 1) {
+                     port_tmp[idx_port++] = c;
+                 }
+             }
+         }
+
+         if (idx_ip > 0 && num_servers < MAX_SERVER) {
+             port_tmp[idx_port] = '\0';
+             memset(&backend_addr[num_servers], 0, sizeof(struct sockaddr_in));
+             backend_addr[num_servers].sin_family = AF_INET;
+             portaServer = atoi(port_tmp);
+             if(portaServer<1 ||portaServer>65535){
+
+                 printf("porta non permessa");
+                 exit(EXIT_FAILURE);
+             }
+             backend_addr[num_servers].sin_port = htons(portaServer);
+
+            if( inet_pton(AF_INET, ip_tmp, &backend_addr[num_servers].sin_addr)!= 1){
+                printf("file malformato");
+                exit(EXIT_FAILURE);
+            }
+
+             printf("Caricato backend %d: %s:%s\n", num_servers, ip_tmp, port_tmp);
+             num_servers++;
+         }
+
+         close(serverList_fd);
+         if (num_servers==0){
+             printf("Errore: file vuoto o malformato");
+             exit(EXIT_FAILURE);
+         }
     port = atoi(argv[1]);
     if (port < 1024 || port > 65535) {
         printf("Porta scorretta...\n");
         exit(2);
     }
-    strncpy(backendServer,argv[2], DIM_BUFF-1);
-    backendServer[DIM_BUFF-1] = '\0';
-    printf("Preso in input il file %s", backendServer);
-
     memset((char *)&servaddr, 0, sizeof(struct sockaddr_in));
     servaddr.sin_family      = AF_INET;
     servaddr.sin_addr.s_addr = INADDR_ANY;
@@ -95,56 +170,7 @@ int main(int argc, char **argv) {
 
     printf("Inizio del demone\n");
     roundRobin = 0;
-    serverList_fd = open(backendServer, O_RDONLY);
 
-        if (serverList_fd < 0) {
-            perror("Errore apertura file server");
-            exit(EXIT_FAILURE);
-        }
-        while (read(serverList_fd, &c, 1) > 0) {
-            if (c == ' ' || c == '\t') {
-                ip_tmp[idx_ip] = '\0';
-                leggendo_porta = 1;
-            }
-            else if (c == '\n') {
-                if (idx_ip > 0) {
-                    port_tmp[idx_port] = '\0';
-
-                    memset(&backend_addr[num_servers], 0, sizeof(struct sockaddr_in));
-                    backend_addr[num_servers].sin_family = AF_INET;
-                    backend_addr[num_servers].sin_port = htons(atoi(port_tmp));
-                    inet_pton(AF_INET, ip_tmp, &backend_addr[num_servers].sin_addr);
-
-                    printf("Caricato backend %d: %s:%s\n", num_servers, ip_tmp, port_tmp);
-
-                    num_servers++;
-                    if (num_servers >= MAX_SERVER)
-                        break;
-                }
-                idx_ip = 0;
-                idx_port = 0;
-                leggendo_porta = 0;
-            }
-            else if (c != '\r') {
-                if (leggendo_porta == 0 && idx_ip < sizeof(ip_tmp) - 1) {
-                    ip_tmp[idx_ip++] = c;
-                } else if (leggendo_porta == 1 && idx_port < sizeof(port_tmp) - 1) {
-                    port_tmp[idx_port++] = c;
-                }
-            }
-        }
-
-        if (idx_ip > 0 && num_servers < MAX_SERVER) {
-            port_tmp[idx_port] = '\0';
-            memset(&backend_addr[num_servers], 0, sizeof(struct sockaddr_in));
-            backend_addr[num_servers].sin_family = AF_INET;
-            backend_addr[num_servers].sin_port = htons(atoi(port_tmp));
-            inet_pton(AF_INET, ip_tmp, &backend_addr[num_servers].sin_addr);
-            printf("Caricato backend %d: %s:%s\n", num_servers, ip_tmp, port_tmp);
-            num_servers++;
-        }
-
-        close(serverList_fd);
     for (;;) {
         len = sizeof(cliaddr);
         if ((connfd = accept(listenfd, (struct sockaddr *)&cliaddr, &len)) < 0) {
