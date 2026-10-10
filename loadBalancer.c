@@ -30,7 +30,7 @@ void gestore(int signo) {
 }
 
 int main(int argc, char **argv) {
-    int listenfd, connfd, nread, port, backend_fd, maxfd, n, roundRobin, serverList_fd, portaServer;
+    int listenfd, connfd, nread, port, backend_fd, maxfd, n, roundRobin, serverList_fd, portaServer, tentativo, idx;
     const int on = 1;
     fd_set rset;
     char buff[DIM_BUFF], backendServer[DIM_BUFF], c, ip_tmp[32], port_tmp[16];
@@ -57,12 +57,12 @@ int main(int argc, char **argv) {
 
     strncpy(backendServer,argv[2], DIM_BUFF-1);
     backendServer[DIM_BUFF-1] = '\0';
-    printf("Preso in input il file %s", backendServer);
+    printf("Preso in input il file %s\n", backendServer);
 
     serverList_fd = open(backendServer, O_RDONLY);
 
          if (serverList_fd < 0) {
-             perror("Errore apertura file server");
+             perror("Errore apertura file server\n");
              exit(EXIT_FAILURE);
          }
          while (read(serverList_fd, &c, 1) > 0) {
@@ -79,13 +79,13 @@ int main(int argc, char **argv) {
                      portaServer = atoi(port_tmp);
                      if(portaServer<1 ||portaServer>65535){
 
-                         printf("porta non permessa");
+                         printf("porta non permessa\n");
                          exit(EXIT_FAILURE);
                      }
                      backend_addr[num_servers].sin_port = htons(portaServer);
 
                      if(inet_pton(AF_INET, ip_tmp, &backend_addr[num_servers].sin_addr)!=1){
-                         printf("file malformato");
+                         printf("file malformato\n");
                          exit(EXIT_FAILURE);
                      }
 
@@ -115,13 +115,13 @@ int main(int argc, char **argv) {
              portaServer = atoi(port_tmp);
              if(portaServer<1 ||portaServer>65535){
 
-                 printf("porta non permessa");
+                 printf("porta non permessa\n");
                  exit(EXIT_FAILURE);
              }
              backend_addr[num_servers].sin_port = htons(portaServer);
 
             if( inet_pton(AF_INET, ip_tmp, &backend_addr[num_servers].sin_addr)!= 1){
-                printf("file malformato");
+                printf("file malformato\n");
                 exit(EXIT_FAILURE);
             }
 
@@ -131,7 +131,7 @@ int main(int argc, char **argv) {
 
          close(serverList_fd);
          if (num_servers==0){
-             printf("Errore: file vuoto o malformato");
+             printf("Errore: file vuoto o malformato\n");
              exit(EXIT_FAILURE);
          }
     port = atoi(argv[1]);
@@ -187,19 +187,31 @@ int main(int argc, char **argv) {
 
         if (fork() == 0) {
             close(listenfd);
+            backend_fd = -1;
+            for(tentativo= 0;tentativo<num_servers;tentativo++){
+                idx = (roundRobin + tentativo) % num_servers;
                 if ((backend_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-                    perror("Errore creazione socket verso backend");
-                    close(connfd);
-                    exit(EXIT_FAILURE);
+                    printf("tentativo fallito, riprovo con il server successivo\n");
+                    continue;
                 }
 
-                 if (connect(backend_fd, (struct sockaddr *)&backend_addr[roundRobin], sizeof(struct sockaddr_in)) < 0) {
-                    perror("Errore connect al backend");
+                 if (connect(backend_fd, (struct sockaddr *)&backend_addr[idx], sizeof(struct sockaddr_in)) == 0){
+                     break;
+                 }
+                 else {
+                    inet_ntop(AF_INET, &(backend_addr[idx].sin_addr), buff, INET_ADDRSTRLEN);
+                    printf("Errore connect, riprovo con il successivo %s:%d\n", buff, ntohs(backend_addr[idx].sin_port));
                     close(backend_fd);
-                    close(connfd);
-                    exit(EXIT_FAILURE);
+                    backend_fd = -1;
                 }
-                printf("Connessione al backend avvennuta\n");
+            }
+            if(backend_fd == -1){
+                printf("Tentativi di connessione ai server fallita\n");
+                close(connfd);
+                exit(EXIT_FAILURE);
+            }
+
+                printf("Connessione al backend avvennuta per l'indice %d\n", idx);
 
                 maxfd = (connfd > backend_fd) ? connfd : backend_fd;
 
