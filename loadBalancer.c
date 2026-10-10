@@ -9,8 +9,9 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
-
+#include <fcntl.h>
 #define DIM_BUFF 4096
+#define MAX_SERVER 5
 #define WRITE_ALL(fd, buf, count, n) \
     while (count > 0) { \
         n = write(fd, buf, count); \
@@ -29,17 +30,19 @@ void gestore(int signo) {
 }
 
 int main(int argc, char **argv) {
-    int listenfd, connfd, nread, port, backend_fd, maxfd, n, roundRobin;
+    int listenfd, connfd, nread, port, backend_fd, maxfd, n, roundRobin, serverList_fd;
     const int on = 1;
     fd_set rset;
-    char buff[DIM_BUFF];
+    char buff[DIM_BUFF], backendServer[DIM_BUFF], c, ip_tmp[32], port_tmp[16];
     socklen_t len;
     char *ptr = buff;
     size_t da_scrivere;
     ssize_t esito;
-    struct sockaddr_in cliaddr, servaddr, backend_addr;
-    if (argc != 2) {
-        printf("Error: %s port\n", argv[0]);
+    struct sockaddr_in cliaddr, servaddr;
+    struct sockaddr_in backend_addr[MAX_SERVER];
+    int num_servers = 0, idx_ip = 0, idx_port = 0,leggendo_porta = 0;
+    if (argc != 3) {
+        printf("Error: %s port fileServer\n", argv[0]);
         exit(1);
     }
 
@@ -57,6 +60,9 @@ int main(int argc, char **argv) {
         printf("Porta scorretta...\n");
         exit(2);
     }
+    strncpy(backendServer,argv[2], DIM_BUFF-1);
+    backendServer[DIM_BUFF-1] = '\0';
+    printf("Preso in input il file %s", backendServer);
 
     memset((char *)&servaddr, 0, sizeof(struct sockaddr_in));
     servaddr.sin_family      = AF_INET;
@@ -89,7 +95,56 @@ int main(int argc, char **argv) {
 
     printf("Inizio del demone\n");
     roundRobin = 0;
+    serverList_fd = open(backendServer, O_RDONLY);
 
+        if (serverList_fd < 0) {
+            perror("Errore apertura file server");
+            exit(EXIT_FAILURE);
+        }
+        while (read(serverList_fd, &c, 1) > 0) {
+            if (c == ' ' || c == '\t') {
+                ip_tmp[idx_ip] = '\0';
+                leggendo_porta = 1;
+            }
+            else if (c == '\n') {
+                if (idx_ip > 0) {
+                    port_tmp[idx_port] = '\0';
+
+                    memset(&backend_addr[num_servers], 0, sizeof(struct sockaddr_in));
+                    backend_addr[num_servers].sin_family = AF_INET;
+                    backend_addr[num_servers].sin_port = htons(atoi(port_tmp));
+                    inet_pton(AF_INET, ip_tmp, &backend_addr[num_servers].sin_addr);
+
+                    printf("Caricato backend %d: %s:%s\n", num_servers, ip_tmp, port_tmp);
+
+                    num_servers++;
+                    if (num_servers >= MAX_SERVER)
+                        break;
+                }
+                idx_ip = 0;
+                idx_port = 0;
+                leggendo_porta = 0;
+            }
+            else if (c != '\r') {
+                if (leggendo_porta == 0 && idx_ip < sizeof(ip_tmp) - 1) {
+                    ip_tmp[idx_ip++] = c;
+                } else if (leggendo_porta == 1 && idx_port < sizeof(port_tmp) - 1) {
+                    port_tmp[idx_port++] = c;
+                }
+            }
+        }
+
+        if (idx_ip > 0 && num_servers < MAX_SERVER) {
+            port_tmp[idx_port] = '\0';
+            memset(&backend_addr[num_servers], 0, sizeof(struct sockaddr_in));
+            backend_addr[num_servers].sin_family = AF_INET;
+            backend_addr[num_servers].sin_port = htons(atoi(port_tmp));
+            inet_pton(AF_INET, ip_tmp, &backend_addr[num_servers].sin_addr);
+            printf("Caricato backend %d: %s:%s\n", num_servers, ip_tmp, port_tmp);
+            num_servers++;
+        }
+
+        close(serverList_fd);
     for (;;) {
         len = sizeof(cliaddr);
         if ((connfd = accept(listenfd, (struct sockaddr *)&cliaddr, &len)) < 0) {
@@ -112,16 +167,7 @@ int main(int argc, char **argv) {
                     exit(EXIT_FAILURE);
                 }
 
-                memset(&backend_addr, 0, sizeof(backend_addr));
-                backend_addr.sin_family = AF_INET;
-                backend_addr.sin_port = htons(8001);
-                if (inet_pton(AF_INET, "127.0.0.1", &backend_addr.sin_addr) <= 0) {
-                    perror("Errore trasformazione ip in binario");
-                   close(backend_fd);
-                    close(connfd);
-                    exit(EXIT_FAILURE);
-                }
-                if (connect(backend_fd, (struct sockaddr *)&backend_addr, sizeof(backend_addr)) < 0) {
+                 if (connect(backend_fd, (struct sockaddr *)&backend_addr[roundRobin], sizeof(struct sockaddr_in)) < 0) {
                     perror("Errore connect al backend");
                     close(backend_fd);
                     close(connfd);
@@ -150,7 +196,7 @@ int main(int argc, char **argv) {
                         ptr = buff;
                         da_scrivere = n;
                         WRITE_ALL(backend_fd, ptr, da_scrivere, esito);
-                        if (esito < 0 && da_scrivere>0) {
+                        if (esito <= 0 && da_scrivere>0) {
                             perror("Errore scrittura verso backend");
                             break;
                         }
@@ -164,7 +210,7 @@ int main(int argc, char **argv) {
                         ptr = buff;
                         da_scrivere = n;
                         WRITE_ALL(connfd, ptr, da_scrivere, esito);
-                        if (esito < 0 && da_scrivere>0) {
+                        if (esito <= 0 && da_scrivere>0) {
                             perror("Errore scrittura verso client");
                             break;
                         }
@@ -176,7 +222,10 @@ int main(int argc, char **argv) {
             close(connfd);
             exit(EXIT_SUCCESS);
         }
-
+        roundRobin++;
+        if (roundRobin == num_servers){
+            roundRobin = 0;
+        }
         close(connfd);
     }
 
