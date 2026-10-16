@@ -215,11 +215,12 @@ int main(int argc, char **argv) {
     if (fork() == 0){
         //Health check
         log_msg("INFO","Health checker in funzione");
+                    close(listenfd);
         for(;;){
-            close(listenfd);
+
             backend_fd = -1;
             for(tentativo= 0;tentativo<num_servers;tentativo++){
-
+                log_msg("INFO","Inizio a mandare il health check");
                 if ((backend_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
                     log_msg("WARN", "Creazione socket backend fallita al tentativo %d", tentativo);
 
@@ -228,6 +229,7 @@ int main(int argc, char **argv) {
 
                  if (connect(backend_fd, (struct sockaddr *)&backend_addr[tentativo], sizeof(struct sockaddr_in)) == 0){
                      healthCheck[tentativo] = 0;
+                     log_msg("INFO","Tutto bene per il server %d", tentativo);
                      close(backend_fd);
                  }
                  else {
@@ -237,12 +239,17 @@ int main(int argc, char **argv) {
                         if(write(channel[1], &tentativo,sizeof(tentativo))<0){
                             log_msg("ERROR", "Health checker ha cercato di avvertire il loadbalancer di un server caduto ha fallito: %s", strerror(errno));
                         }
-                    }
+                            for (idx = tentativo; idx < num_servers - 1; idx++) {
+                                backend_addr[idx] = backend_addr[idx + 1];
+                            }
+                            num_servers--;
+                        }
                     close(backend_fd);
                     backend_fd = -1;
                 }
+
             }
-            sleep(1000*3);
+            sleep(3);
         }
     }else{
         FD_ZERO(&rset);
