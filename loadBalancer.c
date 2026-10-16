@@ -245,7 +245,6 @@ int main(int argc, char **argv) {
             sleep(1000*3);
         }
     }else{
-        // rendere asincrono la pipe[0], così attuare una select e prendere dal Health checker quale server è caduto
         FD_ZERO(&rset);
         maxfdp1 = max(listenfd, channel[0]) + 1;
 
@@ -370,13 +369,24 @@ int main(int argc, char **argv) {
                 close(connfd);
             }
         }
-        if(FD_ISSET(channel[0], &rset)){
-            if(read(channel[0], &idx, sizeof(idx))<0){
-                log_msg("ERROR", "Lettura della pipe fallita: %s", strerror(errno));
-                continue;
-            }
+            if(FD_ISSET(channel[0], &rset)){
+                        if(read(channel[0], &idx, sizeof(idx))<0){
+                            log_msg("ERROR", "Lettura della pipe fallita: %s", strerror(errno));
+                            continue;
+                        }
+                        if (idx >= 0 && idx < num_servers) {
+                            inet_ntop(AF_INET, &(backend_addr[idx].sin_addr), buff, INET_ADDRSTRLEN);
+                            log_msg("WARN", "Server %s:%d rimosso per fallimento health check", buff, ntohs(backend_addr[idx].sin_port));
 
-        }
+                            for (tentativo = idx; tentativo < num_servers - 1; tentativo++) {
+                                backend_addr[tentativo] = backend_addr[tentativo + 1];
+                            }
+                            num_servers--;
+                            if (roundRobin >= num_servers && num_servers > 0) {
+                                roundRobin = 0;
+                            }
+                        }
+                    }
 
         }
 
